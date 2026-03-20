@@ -11,6 +11,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"gitverse.ru/pavlov-systems/cache-lifecycle-go/internal/cache"
 	"gitverse.ru/pavlov-systems/cache-lifecycle-go/internal/database"
+	"gitverse.ru/pavlov-systems/cache-lifecycle-go/internal/warmup"
 )
 
 type Product struct {
@@ -55,11 +56,22 @@ func main() {
 	rdb := cache.NewRedisClient()
 	ctx := context.Background()
 
+	// НОВАЯ ЧАСТЬ: Прогреваем кэш при старте
+	err := warmup.PreloadTopProducts(ctx, db, rdb)
+	if err != nil {
+		log.Fatalf("Warmup failed: %v", err)
+	}
+
+	// Теперь проверим запрос к ID=5 (который попал под прогрев)
+	start := time.Now()
+	p, status := getProduct(ctx, db, rdb, 5)
+	fmt.Printf("[%s] ID: %d, Time: %v\n", status, p.ID, time.Since(start))
+
 	// Демонстрация
 	targetID := 10
 
 	// Первый вызов — COLD
-	start := time.Now()
+
 	p1, status1 := getProduct(ctx, db, rdb, targetID)
 	fmt.Printf("[%s] ID: %d, Time: %v\n", status1, p1.ID, time.Since(start))
 
