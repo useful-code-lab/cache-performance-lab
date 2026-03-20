@@ -18,3 +18,17 @@ aleksey@aleksey:~/cache-lifecycle-go$ go run main.go
 ```bash
 docker exec -it $(docker ps -qf "name=postgres") psql -U user -d inventory -c "SELECT id, name, price FROM products LIMIT 10;"
 ```
+```bash
+aleksey@aleksey:~/cache-lifecycle-go$ go run main.go
+```
+
+Получение данных
+Из горячего кэша, потому что "Продукт 1" в кэше
+```http
+http://localhost:8080/product/1
+```
+
+Из горячего кэша, потому что "Продукт 50" нет в кэше
+```http
+http://localhost:8080/product/50
+```

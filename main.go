@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -14,69 +16,91 @@ import (
 	"gitverse.ru/pavlov-systems/cache-lifecycle-go/internal/warmup"
 )
 
+// Структура продукта (должна совпадать с той, что в БД)
 type Product struct {
 	ID    int     `json:"id"`
 	Name  string  `json:"name"`
 	Price float64 `json:"price"`
 }
 
+var (
+	db  *pgx.Conn
+	rdb *redis.Client
+)
+
+func main() {
+	var err error
+	ctx := context.Background()
+
+	// 1. Подключения
+	db, err = database.ConnectDB()
+	if err != nil {
+		log.Fatal(err)
+	}
+	rdb = cache.NewRedisClient()
+
+	// 2. ПРОГРЕВ (Warm-up) при старте
+	log.Println("Initializing application...")
+	warmup.PreloadTopProducts(ctx, db, rdb)
+
+	// 3. Маршрут API
+	http.HandleFunc("/product/", productHandler)
+
+	log.Println("Server started at :8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+
+func productHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	// Извлекаем ID из URL (например, /product/5)
+	idStr := r.URL.Path[len("/product/"):]
+	id, _ := strconv.Atoi(idStr)
+
+	start := time.Now()
+
+	// Наша логика кэширования
+	p, status := getProduct(ctx, db, rdb, id)
+
+	duration := time.Since(start)
+
+	// Формируем ответ
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Cache-Status", status) // Показываем статус в заголовках
+	w.Header().Set("X-Response-Time", duration.String())
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"data":   p,
+		"status": status,
+		"time":   duration.String(),
+	})
+}
+
+// Та самая функция getProduct (убедитесь, что она объявлена в main.go или вынесена)
 func getProduct(ctx context.Context, db *pgx.Conn, rdb *redis.Client, id int) (*Product, string) {
 	key := fmt.Sprintf("product:%d", id)
 
-	// 1. Попытка получить из кэша (HOT)
+	// Проверка кэша (HOT)
 	val, err := rdb.Get(ctx, key).Result()
 	if err == nil {
 		var p Product
 		json.Unmarshal([]byte(val), &p)
-		return &p, "Горячий (из кэша)"
+		return &p, "HOT"
 	}
 
-	// 2. Если в кэше нет (COLD), идем в БД
-	// Имитируем задержку БД, чтобы разница была заметна
+	// Имитация тяжелой БД (COLD)
 	time.Sleep(500 * time.Millisecond)
 
 	var p Product
-	query := "SELECT id, name, price FROM products WHERE id=$1"
-	err = db.QueryRow(ctx, query, id).Scan(&p.ID, &p.Name, &p.Price)
+	err = db.QueryRow(ctx, "SELECT id, name, price FROM products WHERE id=$1", id).
+		Scan(&p.ID, &p.Name, &p.Price)
+
 	if err != nil {
-		log.Println("Product not found")
-		return nil, "ERROR"
+		return nil, "NOT_FOUND"
 	}
 
-	// 3. Сохраняем в кэш на 1 минуту, чтобы следующий запрос был HOT
+	// Сохранение в кэш
 	data, _ := json.Marshal(p)
-	rdb.Set(ctx, key, data, time.Minute)
+	rdb.Set(ctx, key, data, 5*time.Minute)
 
-	return &p, "Холодный (из базы данных)"
-}
-
-func main() {
-	// Инициализация (пропустим обработку ошибок для краткости)
-	db, _ := database.ConnectDB()
-	rdb := cache.NewRedisClient()
-	ctx := context.Background()
-
-	// НОВАЯ ЧАСТЬ: Прогреваем кэш при старте
-	err := warmup.PreloadTopProducts(ctx, db, rdb)
-	if err != nil {
-		log.Fatalf("Warmup failed: %v", err)
-	}
-
-	// Теперь проверим запрос к ID=5 (который попал под прогрев)
-	start := time.Now()
-	p, status := getProduct(ctx, db, rdb, 5)
-	fmt.Printf("[%s] ID: %d, Time: %v\n", status, p.ID, time.Since(start))
-
-	// Демонстрация
-	targetID := 10
-
-	// Первый вызов — COLD
-
-	p1, status1 := getProduct(ctx, db, rdb, targetID)
-	fmt.Printf("[%s] ID: %d, Time: %v\n", status1, p1.ID, time.Since(start))
-
-	// Второй вызов — HOT
-	start = time.Now()
-	p2, status2 := getProduct(ctx, db, rdb, targetID)
-	fmt.Printf("[%s] ID: %d, Time: %v\n", status2, p2.ID, time.Since(start))
+	return &p, "COLD"
 }
