@@ -1,0 +1,17 @@
+version: '3.8'
+services:
+  # Наша основная база данных (Медленное хранилище)
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: inventory
+    ports:
+      - "5432:5432"
+
+  # Наш кэш (Быстрое хранилище)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
